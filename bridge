@@ -96,8 +96,8 @@ for($i = 0; $i < $config['threads']; ++$i) {
 		$ans = post('http://127.0.0.1:'.$config['server_port'].'/completion', [
 			'prompt' => $generation['payload']['prompt'],
 			'cache_prompt' => false,
-			'n_predict' => min($config['max_length'], $generation['payload']['max_length'] ?? 0),
-			'n_keep' => min($config['max_context_length'], $generation['payload']['max_context_length'] ?? 0),
+			'n_predict' => $n_predict = min($config['max_length'], $generation['payload']['max_length'] ?? 0),
+			'n_keep' => $n_keep = min($config['max_context_length'], $generation['payload']['max_context_length'] ?? 0),
 			'repeat_penalty' => $generation['payload']['rep_pen'] ?? 1.1,
 			'repeat_last_n' => $generation['payload']['rep_pen_range'] ?? 64,
 			/* XXX: rep_pen_slope */
@@ -137,7 +137,7 @@ for($i = 0; $i < $config['threads']; ++$i) {
 			return 1;
 		}
 
-		spawn_task(function() use($config, $generation, $ans, $i) {
+		spawn_task(function() use($config, $generation, $ans, $n_keep, $n_predict, $i) {
 			$horde_ans = post($config['horde_root'].'/api/v2/generate/text/submit', [
 				'id' => $generation['id'],
 				'generation' => $ans['content'],
@@ -151,9 +151,9 @@ for($i = 0; $i < $config['threads']; ++$i) {
 				printf("worker %d submitted %s, evaluated %d/%d (%.1fT/s) and predicted %d/%d (%.1fT/s) tokens, got %.2f kudos\n",
 				       $i,
 				       $generation['id'],
-				       $ans['tokens_evaluated'], $config['max_context_length'],
+				       $ans['tokens_evaluated'], $n_keep,
 				       $ans['timings']['prompt_per_second'],
-				       $ans['tokens_predicted'], $config['max_length'],
+				       $ans['tokens_predicted'], $n_predict,
 				       $ans['timings']['predicted_per_second'],
 				       $horde_ans['reward']);
 				return 0;
