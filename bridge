@@ -33,7 +33,7 @@ function spawn_task(callable $t): int {
 		return $pid;
 	}
 
-	$t();
+	die((int)$t());
 }
 
 function post(string $uri, array $json, array $headers = []): array|false {
@@ -63,7 +63,7 @@ $server_pid = spawn_task(function() use($config) {
 	}
 	$cmd .= ' --log-disable >/dev/null'; /* For privacy and legal deniability */
 	passthru($cmd, $ret_code);
-	die($ret_code);
+	return $ret_code;
 });
 
 while(1) {
@@ -130,24 +130,32 @@ while(1) {
 		})($generation['payload']['sampler_order'] ?? [6,0,1,3,4,2,5]),
 	]);
 	if(!isset($ans['content'])) {
-		msg("unexpected reply from llama.cpp server: %s\n", var_export($ans, true));
+		msg("unexpected reply from llama.cpp server: %s\n",
+		    var_export($ans, true));
 		break;
 	}
 
-	$horde_ans = post($config['horde_root'].'/api/v2/generate/text/submit', [
-		'id' => $generation['id'],
-		'generation' => $ans['content'],
-		'state' => 'ok',
-	], ['apikey: '.$config['worker_api_key']]);
-	if(!isset($horde_ans['reward'])) {
-		msg("unexpected reply from /submit: %s\n", var_export($horde_ans, true));
-	} else {
-		printf("submitted %s, evaluated %d/%d (%.1fT/s) and predicted %d/%d (%.1fT/s) tokens, got %.2f kudos\n",
-		       $generation['id'],
-		       $ans['tokens_evaluated'], $config['max_context_length'], $ans['timings']['prompt_per_second'],
-		       $ans['tokens_predicted'], $config['max_length'], $ans['timings']['predicted_per_second'],
-		       $horde_ans['reward']);
-	}
+	spawn_task(function() use($config, $generation, $ans) {
+		$horde_ans = post($config['horde_root'].'/api/v2/generate/text/submit', [
+			'id' => $generation['id'],
+			'generation' => $ans['content'],
+			'state' => 'ok',
+		], ['apikey: '.$config['worker_api_key']]);
+		if(!isset($horde_ans['reward'])) {
+			msg("unexpected reply from /submit: %s\n",
+			    var_export($horde_ans, true));
+			return 1;
+		} else {
+			printf("submitted %s, evaluated %d/%d (%.1fT/s) and predicted %d/%d (%.1fT/s) tokens, got %.2f kudos\n",
+			       $generation['id'],
+			       $ans['tokens_evaluated'], $config['max_context_length'],
+			       $ans['timings']['prompt_per_second'],
+			       $ans['tokens_predicted'], $config['max_length'],
+			       $ans['timings']['predicted_per_second'],
+			       $horde_ans['reward']);
+			return 0;
+		}
+	});
 }
 
 posix_kill($server_pid, SIGTERM);
