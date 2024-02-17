@@ -88,7 +88,7 @@ for($i = 0; $i < $config['threads']; ++$i) {
 			'amount' => 1,
 		], ['apikey: '.$config['worker_api_key']]);
 		if(!isset($generation['payload']['prompt'])) {
-			msg("got unexpected generation request: %s\n", var_export($generation, true));
+			msg("got unexpected generation request: %s\n", json_encode($generation));
 			sleep(5);
 			return 0;
 		}
@@ -133,7 +133,7 @@ for($i = 0; $i < $config['threads']; ++$i) {
 		]);
 		if(!isset($ans['content'])) {
 			msg("unexpected reply from llama.cpp server: %s\n",
-			    var_export($ans, true));
+			    json_encode($ans));
 			return 1;
 		}
 
@@ -145,7 +145,7 @@ for($i = 0; $i < $config['threads']; ++$i) {
 			], ['apikey: '.$config['worker_api_key']]);
 			if(!isset($horde_ans['reward'])) {
 				msg("unexpected reply from /submit: %s\n",
-				    var_export($horde_ans, true));
+				    json_encode($horde_ans));
 				return 1;
 			} else {
 				printf("worker %d submitted %s, evaluated %d/%d (%.1fT/s) and predicted %d/%d (%.1fT/s) tokens, got %.2f kudos\n",
