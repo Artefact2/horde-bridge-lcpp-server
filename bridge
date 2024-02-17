@@ -93,6 +93,14 @@ for($i = 0; $i < $config['threads']; ++$i) {
 			return 0;
 		}
 
+		if($generation['payload']['singleline'] ?? false) {
+			if(!isset($generation['payload']['stop_sequence'])) {
+				$generation['payload']['stop_sequence'] = [];
+			}
+			$generation['payload']['stop_sequence'][] = "\n";
+			$generation['payload']['stop_sequence'][] = "\r\n";
+		}
+
 		$ans = post('http://127.0.0.1:'.$config['server_port'].'/completion', [
 			'prompt' => $generation['payload']['prompt'],
 			'cache_prompt' => false,
