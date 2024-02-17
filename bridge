@@ -43,6 +43,7 @@ function post(string $uri, array $json, array $headers = []): array|false {
 			'method' => 'POST',
 			'header' => implode("\r\n", $headers),
 			'content' => json_encode($json),
+			'timeout' => 180,
 		],
 	]);
 	$ans = file_get_contents($uri, false, $ctx);
@@ -56,7 +57,7 @@ $server_pid = spawn_task(function() use($config) {
 	msg("spawning llama.cpp server\n");
 	chdir(__DIR__);
 	$cmd = $config['server_command'];
-	$cmd .= ' -c '.($config['max_context_length']+$config['max_length']); /* XXX */
+	$cmd .= ' -c '.$config['max_context_length'];
 	$cmd .= ' --host 127.0.0.1 --port '.$config['server_port'];
 	if($config['threads'] > 1) {
 		$cmd .= ' --cont-batching --parallel '.$config['threads'];
@@ -66,98 +67,122 @@ $server_pid = spawn_task(function() use($config) {
 	return $ret_code;
 });
 
-while(1) {
+do {
+	sleep(2);
 	$status = @json_decode(file_get_contents("http://127.0.0.1:".$config['server_port']."/health"), true);
-	if(($status['status'] ?? "error") !== "ok") {
-		/* Wait for server to load */
-		sleep(2);
-		continue;
-	}
+} while(($status['status'] ?? "error") !== "ok");
+msg("server loaded ok\n");
 
-	$generation = post($config['horde_root'].'/api/v2/generate/text/pop', [
-		'bridge_agent' => 'horde-bridge-lcpp-server/'.$version,
-		'name' => $config['worker_name'],
-		'models' => [ $config['advertised_model'] ],
-		'max_length' => $config['max_length'],
-		'max_context_length' => $config['max_context_length'],
-		'priority_usernames' => $config['priority_usernames'],
-		'softprompts' => [],
-		'threads' => $config['threads'],
-		'amount' => 1,
-	], ['apikey: '.$config['worker_api_key']]);
-	if(!isset($generation['payload']['prompt'])) {
-		msg("got unexpected generation request: %s\n", var_export($generation, true));
-		sleep(5);
-		continue;
-	}
-
-	$ans = post('http://127.0.0.1:'.$config['server_port'].'/completion', [
-		'prompt' => $generation['payload']['prompt'],
-		'cache_prompt' => false,
-		'n_predict' => min($config['max_length'], $generation['payload']['max_length'] ?? 0),
-		'n_keep' => min($config['max_context_length'], $generation['payload']['max_context_length'] ?? 0),
-		'repeat_penalty' => $generation['payload']['rep_pen'] ?? 1.1,
-		'repeat_last_n' => $generation['payload']['rep_pen_range'] ?? 64,
-		/* XXX: rep_pen_slope */
-		/* XXX: singleline */
-		'temperature' => $generation['payload']['temperature'] ?? 0.8,
-		'tfs_z' => $generation['payload']['tfs'] ?? 1.0,
-		/* XXX: top_a */
-		'top_k' => $generation['payload']['top_k'] ?? 0,
-		'top_p' => $generation['payload']['top_p'] ?? 0.95,
-		'typical_p' => $generation['payload']['typical'] ?? 1.0,
-		'min_p' => $generation['payload']['min_p'] ?? 0.05,
-		/* XXX: default_badwordsids */
-		'stop' => $generation['payload']['stop_sequence'] ?? [],
-		'dynatemp_range' => $generation['payload']['dynatemp_range'] ?? 0.0,
-		'dynatemp_exponent' => $generation['payload']['dynatemp_exponent'] ?? 1.0,
-		'samplers' => (function(array $s) {
-			/* from lite.koboldai.net: 0=topk, 1=topa, 2=topp/minp, 3=tfs, 4=typ, 5=temp, 6=reppen */
-			/* https://github.com/ggerganov/llama.cpp/blob/master/common/common.cpp#L1137 */
-			/* XXX: no top_a, rep_pen is always first */
-			$samplers = [];
-			foreach($s as $smp) {
-				if($s === 0) $samplers[] = 'top_k';
-				else if($s === 2) {
-					$samplers[] = 'top_p';
-					$samplers[] = 'min_p';
-				}
-				else if($s === 3) $samplers[] = 'tfs_z';
-				else if($s === 4) $samplers[] = 'typical_p';
-				else if($s === 5) $samplers[] = 'temperature';
-			}
-			return $samplers;
-		})($generation['payload']['sampler_order'] ?? [6,0,1,3,4,2,5]),
-	]);
-	if(!isset($ans['content'])) {
-		msg("unexpected reply from llama.cpp server: %s\n",
-		    var_export($ans, true));
-		break;
-	}
-
-	spawn_task(function() use($config, $generation, $ans) {
-		$horde_ans = post($config['horde_root'].'/api/v2/generate/text/submit', [
-			'id' => $generation['id'],
-			'generation' => $ans['content'],
-			'state' => 'ok',
+$workers = [ $server_pid ];
+for($i = 0; $i < $config['threads']; ++$i) {
+	$work = function() use($config, $version, $i) {
+		$generation = post($config['horde_root'].'/api/v2/generate/text/pop', [
+			'bridge_agent' => 'horde-bridge-lcpp-server/'.$version,
+			'name' => $config['worker_name'],
+			'models' => [ $config['advertised_model'] ],
+			'max_length' => $config['max_length'],
+			'max_context_length' => $config['max_context_length'],
+			'priority_usernames' => $config['priority_usernames'],
+			'softprompts' => [],
+			'threads' => $config['threads'],
+			'amount' => 1,
 		], ['apikey: '.$config['worker_api_key']]);
-		if(!isset($horde_ans['reward'])) {
-			msg("unexpected reply from /submit: %s\n",
-			    var_export($horde_ans, true));
-			return 1;
-		} else {
-			printf("submitted %s, evaluated %d/%d (%.1fT/s) and predicted %d/%d (%.1fT/s) tokens, got %.2f kudos\n",
-			       $generation['id'],
-			       $ans['tokens_evaluated'], $config['max_context_length'],
-			       $ans['timings']['prompt_per_second'],
-			       $ans['tokens_predicted'], $config['max_length'],
-			       $ans['timings']['predicted_per_second'],
-			       $horde_ans['reward']);
+		if(!isset($generation['payload']['prompt'])) {
+			msg("got unexpected generation request: %s\n", var_export($generation, true));
+			sleep(5);
 			return 0;
+		}
+
+		$ans = post('http://127.0.0.1:'.$config['server_port'].'/completion', [
+			'prompt' => $generation['payload']['prompt'],
+			'cache_prompt' => false,
+			'n_predict' => min($config['max_length'], $generation['payload']['max_length'] ?? 0),
+			'n_keep' => min($config['max_context_length'], $generation['payload']['max_context_length'] ?? 0),
+			'repeat_penalty' => $generation['payload']['rep_pen'] ?? 1.1,
+			'repeat_last_n' => $generation['payload']['rep_pen_range'] ?? 64,
+			/* XXX: rep_pen_slope */
+			/* XXX: singleline */
+			'temperature' => $generation['payload']['temperature'] ?? 0.8,
+			'tfs_z' => $generation['payload']['tfs'] ?? 1.0,
+			/* XXX: top_a */
+			'top_k' => $generation['payload']['top_k'] ?? 0,
+			'top_p' => $generation['payload']['top_p'] ?? 0.95,
+			'typical_p' => $generation['payload']['typical'] ?? 1.0,
+			'min_p' => $generation['payload']['min_p'] ?? 0.05,
+			/* XXX: default_badwordsids */
+			'stop' => $generation['payload']['stop_sequence'] ?? [],
+			'dynatemp_range' => $generation['payload']['dynatemp_range'] ?? 0.0,
+			'dynatemp_exponent' => $generation['payload']['dynatemp_exponent'] ?? 1.0,
+			'samplers' => (function(array $s) {
+				/* from lite.koboldai.net: 0=topk, 1=topa, 2=topp/minp, 3=tfs, 4=typ, 5=temp, 6=reppen */
+				/* https://github.com/ggerganov/llama.cpp/blob/master/common/common.cpp#L1137 */
+				/* XXX: no top_a, rep_pen is always first */
+				$samplers = [];
+				foreach($s as $smp) {
+					if($s === 0) $samplers[] = 'top_k';
+					else if($s === 2) {
+						$samplers[] = 'top_p';
+						$samplers[] = 'min_p';
+					}
+					else if($s === 3) $samplers[] = 'tfs_z';
+					else if($s === 4) $samplers[] = 'typical_p';
+					else if($s === 5) $samplers[] = 'temperature';
+				}
+				return $samplers;
+			})($generation['payload']['sampler_order'] ?? [6,0,1,3,4,2,5]),
+		]);
+		if(!isset($ans['content'])) {
+			msg("unexpected reply from llama.cpp server: %s\n",
+			    var_export($ans, true));
+			return 1;
+		}
+
+		spawn_task(function() use($config, $generation, $ans, $i) {
+			$horde_ans = post($config['horde_root'].'/api/v2/generate/text/submit', [
+				'id' => $generation['id'],
+				'generation' => $ans['content'],
+				'state' => 'ok',
+			], ['apikey: '.$config['worker_api_key']]);
+			if(!isset($horde_ans['reward'])) {
+				msg("unexpected reply from /submit: %s\n",
+				    var_export($horde_ans, true));
+				return 1;
+			} else {
+				printf("worker %d submitted %s, evaluated %d/%d (%.1fT/s) and predicted %d/%d (%.1fT/s) tokens, got %.2f kudos\n",
+				       $i,
+				       $generation['id'],
+				       $ans['tokens_evaluated'], $config['max_context_length'],
+				       $ans['timings']['prompt_per_second'],
+				       $ans['tokens_predicted'], $config['max_length'],
+				       $ans['timings']['predicted_per_second'],
+				       $horde_ans['reward']);
+				return 0;
+			}
+		});
+		return 0;
+	};
+
+	$workers[] = spawn_task(function() use($config, $version, $work) {
+		while(1) {
+			if($work() !== 0) {
+				return 1;
+			}
 		}
 	});
 }
+msg("spawned %d worker processes\n", $config['threads']);
 
-posix_kill($server_pid, SIGTERM);
-pcntl_waitpid($server_pid, $status);
-die($status);
+while(1) {
+	foreach($workers as $pid) {
+		if(pcntl_waitpid($pid, $status, WNOHANG) !== 0) {
+			/* one of the workers died, abort */
+			break 2;
+		}
+	}
+	sleep(10);
+}
+
+foreach($workers as $pid) {
+	posix_kill($pid, SIGKILL);
+	pcntl_waitpid($pid, $status);
+}
