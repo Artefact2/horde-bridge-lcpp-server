@@ -1,0 +1,152 @@
+#!/usr/bin/env php
+<?php
+/* Copyright 2024 Romain "Artefact2" Dal Maso <romain.dalmaso@artefact2.com>
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *         http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+$config = json_decode(file_get_contents($argv[1] ?? __DIR__.'/config.json'), true);
+if(!is_array($config)) {
+	fprintf(STDERR, "%s: no config file; please copy config.json.example to config.json\n", $argv[0]);
+	die(1);
+}
+$version = trim(shell_exec('git -C '.escapeshellarg(__DIR__).' describe --always --abbrev=7'));
+
+function msg(...$args): void {
+	$fmt = array_shift($args);
+	$fmt = "================= ".$fmt;
+	fprintf(STDERR, $fmt, ...$args);
+}
+
+function spawn_task(callable $t): int {
+	if(($pid = pcntl_fork()) !== 0) {
+		return $pid;
+	}
+
+	$t();
+}
+
+function post(string $uri, array $json, array $headers = []): array|false {
+	array_unshift($headers, 'Content-Type: application/json');
+	$ctx = stream_context_create([
+		'http' => [
+			'method' => 'POST',
+			'header' => implode("\r\n", $headers),
+			'content' => json_encode($json),
+		],
+	]);
+	$ans = file_get_contents($uri, false, $ctx);
+	if($ans !== false) {
+		$ans = json_decode($ans, true);
+	}
+	return $ans;
+}
+
+$server_pid = spawn_task(function() use($config) {
+	msg("spawning llama.cpp server\n");
+	chdir(__DIR__);
+	$cmd = $config['server_command'];
+	$cmd .= ' -c '.($config['max_context_length']+$config['max_length']); /* XXX */
+	$cmd .= ' --host 127.0.0.1 --port '.$config['server_port'];
+	if($config['threads'] > 1) {
+		$cmd .= ' --cont-batching --parallel '.$config['threads'];
+	}
+	$cmd .= ' --log-disable >/dev/null'; /* For privacy and legal deniability */
+	passthru($cmd, $ret_code);
+	die($ret_code);
+});
+
+while(1) {
+	$status = @json_decode(file_get_contents("http://127.0.0.1:".$config['server_port']."/health"), true);
+	if(($status['status'] ?? "error") !== "ok") {
+		/* Wait for server to load */
+		sleep(2);
+		continue;
+	}
+
+	$generation = post($config['horde_root'].'/api/v2/generate/text/pop', [
+		'bridge_agent' => 'horde-bridge-lcpp-server/'.$version,
+		'name' => $config['worker_name'],
+		'models' => [ $config['advertised_model'] ],
+		'max_length' => $config['max_length'],
+		'max_context_length' => $config['max_context_length'],
+		'priority_usernames' => $config['priority_usernames'],
+		'softprompts' => [],
+		'threads' => $config['threads'],
+		'amount' => 1,
+	], ['apikey: '.$config['worker_api_key']]);
+	if(!isset($generation['payload']['prompt'])) {
+		msg("got unexpected generation request: %s\n", var_export($generation, true));
+		sleep(5);
+		continue;
+	}
+
+	$ans = post('http://127.0.0.1:'.$config['server_port'].'/completion', [
+		'prompt' => $generation['payload']['prompt'],
+		'cache_prompt' => false,
+		'n_predict' => min($config['max_length'], $generation['payload']['max_length'] ?? 0),
+		'n_keep' => min($config['max_context_length'], $generation['payload']['max_context_length'] ?? 0),
+		'repeat_penalty' => $generation['payload']['rep_pen'] ?? 1.1,
+		'repeat_last_n' => $generation['payload']['rep_pen_range'] ?? 64,
+		/* XXX: rep_pen_slope */
+		/* XXX: singleline */
+		'temperature' => $generation['payload']['temperature'] ?? 0.8,
+		'tfs_z' => $generation['payload']['tfs'] ?? 1.0,
+		/* XXX: top_a */
+		'top_k' => $generation['payload']['top_k'] ?? 0,
+		'top_p' => $generation['payload']['top_p'] ?? 0.95,
+		'typical_p' => $generation['payload']['typical'] ?? 1.0,
+		'min_p' => $generation['payload']['min_p'] ?? 0.05,
+		/* XXX: default_badwordsids */
+		'stop' => $generation['payload']['stop_sequence'] ?? [],
+		'dynatemp_range' => $generation['payload']['dynatemp_range'] ?? 0.0,
+		'dynatemp_exponent' => $generation['payload']['dynatemp_exponent'] ?? 1.0,
+		'samplers' => (function(array $s) {
+			/* from lite.koboldai.net: 0=topk, 1=topa, 2=topp/minp, 3=tfs, 4=typ, 5=temp, 6=reppen */
+			/* https://github.com/ggerganov/llama.cpp/blob/master/common/common.cpp#L1137 */
+			/* XXX: no top_a, rep_pen is always first */
+			$samplers = [];
+			foreach($s as $smp) {
+				if($s === 0) $samplers[] = 'top_k';
+				else if($s === 2) {
+					$samplers[] = 'top_p';
+					$samplers[] = 'min_p';
+				}
+				else if($s === 3) $samplers[] = 'tfs_z';
+				else if($s === 4) $samplers[] = 'typical_p';
+				else if($s === 5) $samplers[] = 'temperature';
+			}
+			return $samplers;
+		})($generation['payload']['sampler_order'] ?? [6,0,1,3,4,2,5]),
+	]);
+	if(!isset($ans['content'])) {
+		msg("unexpected reply from llama.cpp server: %s\n", var_export($ans, true));
+		break;
+	}
+
+	$horde_ans = post($config['horde_root'].'/api/v2/generate/text/submit', [
+		'id' => $generation['id'],
+		'generation' => $ans['content'],
+		'state' => 'ok',
+	], ['apikey: '.$config['worker_api_key']]);
+	if(!isset($horde_ans['reward'])) {
+		msg("unexpected reply from /submit: %s\n", var_export($horde_ans, true));
+	} else {
+		printf("submitted %s, got %.2f kudos\n", $generation['id'], $horde_ans['reward']);
+	}
+
+}
+
+posix_kill($server_pid, SIGTERM);
+pcntl_waitpid($server_pid, $status);
+die($status);
