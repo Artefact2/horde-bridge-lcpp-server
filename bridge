@@ -71,9 +71,8 @@ $server_pid = spawn_task(function() use($config) {
 	chdir(__DIR__);
 	$cmd = $config['server_command'];
 	$cmd .= ' --host 127.0.0.1 --port '.$config['server_port'];
-	if($config['server_slots'] > 1) {
-		$cmd .= ' -np '.$config['server_slots'];
-	}
+	$cmd .= ' -np '.$config['server_slots'];
+	$cmd .= ' -c '.($config['server_slots'] * $config['advertised_max_context_length']);
 	$cmd .= ' --log-disable --slots-endpoint-disable >/dev/null'; /* For privacy and legal deniability */
 	passthru($cmd, $ret_code);
 	return $ret_code;
