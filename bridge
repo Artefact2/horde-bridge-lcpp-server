@@ -74,7 +74,7 @@ $server_pid = spawn_task(function() use($config) {
 	if($config['server_slots'] > 1) {
 		$cmd .= ' -np '.$config['server_slots'];
 	}
-	$cmd .= ' --log-disable >/dev/null'; /* For privacy and legal deniability */
+	$cmd .= ' --log-disable --slots-endpoint-disable >/dev/null'; /* For privacy and legal deniability */
 	passthru($cmd, $ret_code);
 	return $ret_code;
 });
@@ -179,7 +179,6 @@ for($i = 0; $i < $config['workers']; ++$i) {
 			'prompt' => $payload['prompt'],
 			'cache_prompt' => true,
 			'n_predict' => $n_predict = min($config['advertised_max_length'], $payload['max_length']),
-			'n_keep' => $n_keep = min($config['advertised_max_context_length'], $payload['max_context_length']),
 			'repeat_penalty' => $payload['rep_pen'],
 			'repeat_last_n' => $payload['rep_pen_range'],
 			'temperature' => $payload['temperature'],
@@ -239,7 +238,7 @@ for($i = 0; $i < $config['workers']; ++$i) {
 		printf("worker %d submitted %s, evaluated %d/%d (%.1fT/s) and predicted %d/%d (%.1fT/s) tokens, got %.2f kudos\n",
 		       $i,
 		       $generation['id'],
-		       $ans['timings']['prompt_n'], $n_keep,
+		       $ans['timings']['prompt_n'], $payload['max_context_length'],
 		       $ans['timings']['prompt_per_second'],
 		       $ans['timings']['predicted_n'], $n_predict,
 		       $ans['timings']['predicted_per_second'],
