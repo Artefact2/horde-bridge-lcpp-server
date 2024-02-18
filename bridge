@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+pcntl_async_signals(false);
+
 $config = json_decode(file_get_contents($argv[1] ?? __DIR__.'/config.json'), true);
 if(!is_array($config)) {
 	fprintf(STDERR, "%s: no config file; please copy config.json.example to config.json\n", $argv[0]);
@@ -54,6 +56,11 @@ function post(string $uri, array $json, array $headers = []): array|false {
 }
 
 $server_pid = spawn_task(function() use($config) {
+	/* Ignore termination signals, let our parent KILL us when pending requests have completed */
+	pcntl_signal(SIGTERM, SIG_IGN);
+	pcntl_signal(SIGINT, SIG_IGN);
+	pcntl_signal(SIGHUP, SIG_IGN);
+
 	msg("spawning llama.cpp server\n");
 	chdir(__DIR__);
 	$cmd = $config['server_command'];
@@ -73,7 +80,7 @@ do {
 } while(($status['status'] ?? "error") !== "ok");
 msg("server loaded ok\n");
 
-$workers = [ $server_pid ];
+$workers = [];
 for($i = 0; $i < $config['threads']; ++$i) {
 	$work = function() use($config, $version, $i) {
 		$generation = post($config['horde_root'].'/api/v2/generate/text/pop', [
@@ -145,52 +152,68 @@ for($i = 0; $i < $config['threads']; ++$i) {
 			return 1;
 		}
 
-		spawn_task(function() use($config, $generation, $ans, $n_keep, $n_predict, $i) {
-			$horde_ans = post($config['horde_root'].'/api/v2/generate/text/submit', [
-				'id' => $generation['id'],
-				'generation' => $ans['content'],
-				'state' => 'ok',
-			], ['apikey: '.$config['worker_api_key']]);
-			if(!isset($horde_ans['reward'])) {
-				msg("unexpected reply from /submit: %s\n",
-				    json_encode($horde_ans));
-				return 1;
-			} else {
-				printf("worker %d submitted %s, evaluated %d/%d (%.1fT/s) and predicted %d/%d (%.1fT/s) tokens, got %.2f kudos\n",
-				       $i,
-				       $generation['id'],
-				       $ans['tokens_evaluated'], $n_keep,
-				       $ans['timings']['prompt_per_second'],
-				       $ans['tokens_predicted'], $n_predict,
-				       $ans['timings']['predicted_per_second'],
-				       $horde_ans['reward']);
-				return 0;
-			}
-		});
-		return 0;
+		$horde_ans = post($config['horde_root'].'/api/v2/generate/text/submit', [
+			'id' => $generation['id'],
+			'generation' => $ans['content'],
+			'state' => 'ok',
+		], ['apikey: '.$config['worker_api_key']]);
+		if(!isset($horde_ans['reward'])) {
+			msg("unexpected reply from /submit: %s\n",
+			    json_encode($horde_ans));
+			return 1;
+		} else {
+			printf("worker %d submitted %s, evaluated %d/%d (%.1fT/s) and predicted %d/%d (%.1fT/s) tokens, got %.2f kudos\n",
+			       $i,
+			       $generation['id'],
+			       $ans['tokens_evaluated'], $n_keep,
+			       $ans['timings']['prompt_per_second'],
+			       $ans['tokens_predicted'], $n_predict,
+			       $ans['timings']['predicted_per_second'],
+			       $horde_ans['reward']);
+			return 0;
+		}
 	};
 
 	$workers[] = spawn_task(function() use($config, $version, $work) {
-		while(1) {
+		$stop = false;
+		$terminate = function() use(&$stop) {
+			$stop = true;
+		};
+		pcntl_signal(SIGTERM, $terminate);
+		pcntl_signal(SIGINT, $terminate);
+		pcntl_signal(SIGHUP, $terminate);
+		while($stop === false) {
 			if($work() !== 0) {
 				return 1;
 			}
+			pcntl_signal_dispatch();
 		}
+		return 0;
 	});
 }
 msg("spawned %d worker processes\n", $config['threads']);
 
-while(1) {
+$stop = false;
+$terminate = function() use(&$stop, $workers, $server_pid) {
+	msg("got termination signal, waiting for current generation(s) to end...\n");
+	$stop = true;
+	foreach($workers as $i => $pid) {
+		pcntl_waitpid($pid, $status);
+		msg("worker %d exited with code %d\n", $i, $status);
+	}
+	posix_kill(0, SIGKILL);
+};
+pcntl_signal(SIGTERM, $terminate);
+pcntl_signal(SIGINT, $terminate);
+pcntl_signal(SIGHUP, $terminate);
+
+while($stop === false) {
 	foreach($workers as $pid) {
 		if(pcntl_waitpid($pid, $status, WNOHANG) !== 0) {
-			/* one of the workers died, abort */
-			break 2;
+			msg("one of our children exited abnormally, exiting");
+			posix_kill(posix_getpid(), SIGTERM);
 		}
 	}
-	sleep(10);
-}
-
-foreach($workers as $pid) {
-	posix_kill($pid, SIGKILL);
-	pcntl_waitpid($pid, $status);
+	pcntl_signal_dispatch();
+	sleep(5);
 }
