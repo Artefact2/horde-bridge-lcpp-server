@@ -9,5 +9,6 @@
     "priority_usernames": [],
     "workers": 1,
     "server_port": 24499,
+    "server_slots": 1,
     "server_command": "./llama.cpp/server -ngl 999 -c 4096 -m /path/to/model.gguf"
 }
