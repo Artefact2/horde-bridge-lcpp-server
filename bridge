@@ -111,8 +111,20 @@ for($i = 0; $i < $config['workers']; ++$i) {
 			return 0;
 		}
 
-		$payload = array_merge([
+		/* koboldcpp doesn't do anything with these, so it's probably safe to ignore */
+		unset(
+			$generation['payload']['rep_pen_slope'],
+			$generation['payload']['frmtadsnsp'],
+			$generation['payload']['frmtrmblln'],
+			$generation['payload']['frmtrmspch'],
+			$generation['payload']['frmttriminc']
+		);
+
+		$payload = array_merge($defaults = [
+			'prompt' => '',
+			'n' => 1,
 			'singleline' => false,
+			'use_default_badwordsids' => false, /* if true, ignore EOS */
 			'stop_sequence' => [],
 			'sampler_order' => [6,0,1,3,4,2,5],
 			'max_length' => 0,
@@ -125,20 +137,42 @@ for($i = 0; $i < $config['workers']; ++$i) {
 			'top_p' => 0.95,
 			'typical' => 1.0,
 			'min_p' => 0.05,
+			'top_a' => 0,
 			'dynatemp_range' => 0.0,
 			'dynatemp_exponent' => 1.0,
 		], $generation['payload']);
+
+		$unsupported = [];
+		foreach($generation['payload'] as $k => $v) {
+			if(isset($defaults[$k])) continue;
+			$unsupported[$k] = $v;
+		}
+		if($unsupported !== []) {
+			msg("request %s: unknown/unsupported payload keys: %s\n",
+			    $generation['id'], json_encode($unsupported));
+		}
 
 		if($payload['singleline']) {
 			$payload['stop_sequence'][] = "\n";
 			$payload['stop_sequence'][] = "\r\n";
 		}
 
-		if(($generation['payload']['top_a'] ?? 0) > 0) {
-			msg("request %s: ignoring top_a sampler\n", $generation['id']);
+		if($payload['n'] !== 1) {
+			msg("request %s: ignoring n=%d\n",
+			    $generation['id'], $payload['n']);
+		}
+		if($payload['top_a'] > 0 && in_array(1, $payload['sampler_order'])) {
+			msg("request %s: ignoring top_a=%.3f\n",
+			    $generation['id'], $payload['top_a']);
 		}
 		if($payload['rep_pen'] > 1 && $payload['rep_pen_range'] > 0 && $payload['sampler_order'][0] !== 6) {
-			msg("request %s: ignoring rep_pen sampler order\n", $generation['id']);
+			if(!in_array(6, $payload['sampler_order'])) {
+				/* No rep_pen requested at all, we can turn it off ourselves */
+				$payload['rep_pen'] = 1;
+				$payload['rep_pen_range'] = 0;
+			} else {
+				msg("request %s: ignoring rep_pen sampler order\n", $generation['id']);
+			}
 		}
 
 		$ans = post('http://127.0.0.1:'.$config['server_port'].'/completion', [
@@ -148,16 +182,14 @@ for($i = 0; $i < $config['workers']; ++$i) {
 			'n_keep' => $n_keep = min($config['advertised_max_context_length'], $payload['max_context_length']),
 			'repeat_penalty' => $payload['rep_pen'],
 			'repeat_last_n' => $payload['rep_pen_range'],
-			/* XXX: rep_pen_slope */
 			'temperature' => $payload['temperature'],
 			'tfs_z' => $payload['tfs'],
-			/* XXX: top_a */
 			'top_k' => $payload['top_k'],
 			'top_p' => $payload['top_p'],
 			'typical_p' => $payload['typical'],
 			'min_p' => $payload['min_p'],
-			/* XXX: default_badwordsids */
 			'stop' => $payload['stop_sequence'],
+			'ignore_eos' => $payload['use_default_badwordsids'],
 			'dynatemp_range' => $payload['dynatemp_range'],
 			'dynatemp_exponent' => $payload['dynatemp_exponent'],
 			'samplers' => (function() use($payload) {
