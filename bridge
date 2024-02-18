@@ -64,7 +64,6 @@ $server_pid = spawn_task(function() use($config) {
 	msg("spawning llama.cpp server\n");
 	chdir(__DIR__);
 	$cmd = $config['server_command'];
-	$cmd .= ' -c '.$config['max_context_length'];
 	$cmd .= ' --host 127.0.0.1 --port '.$config['server_port'];
 	$cmd .= ' --log-disable >/dev/null'; /* For privacy and legal deniability */
 	passthru($cmd, $ret_code);
@@ -84,8 +83,8 @@ for($i = 0; $i < $config['workers']; ++$i) {
 			'bridge_agent' => 'horde-bridge-lcpp-server/'.$version,
 			'name' => $config['worker_name'],
 			'models' => [ $config['advertised_model'] ],
-			'max_length' => $config['max_length'],
-			'max_context_length' => $config['max_context_length'],
+			'max_length' => $config['advertised_max_length'],
+			'max_context_length' => $config['advertised_max_context_length'],
 			'priority_usernames' => $config['priority_usernames'],
 			'softprompts' => [],
 			'threads' => $config['advertised_threads'],
@@ -108,8 +107,8 @@ for($i = 0; $i < $config['workers']; ++$i) {
 		$ans = post('http://127.0.0.1:'.$config['server_port'].'/completion', [
 			'prompt' => $generation['payload']['prompt'],
 			'cache_prompt' => false,
-			'n_predict' => $n_predict = min($config['max_length'], $generation['payload']['max_length'] ?? 0),
-			'n_keep' => $n_keep = min($config['max_context_length'], $generation['payload']['max_context_length'] ?? 0),
+			'n_predict' => $n_predict = min($config['advertised_max_length'], $generation['payload']['max_length'] ?? 0),
+			'n_keep' => $n_keep = min($config['advertised_max_context_length'], $generation['payload']['max_context_length'] ?? 0),
 			'repeat_penalty' => $generation['payload']['rep_pen'] ?? 1.1,
 			'repeat_last_n' => $generation['payload']['rep_pen_range'] ?? 64,
 			/* XXX: rep_pen_slope */
