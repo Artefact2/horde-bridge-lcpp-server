@@ -66,9 +66,6 @@ $server_pid = spawn_task(function() use($config) {
 	$cmd = $config['server_command'];
 	$cmd .= ' -c '.$config['max_context_length'];
 	$cmd .= ' --host 127.0.0.1 --port '.$config['server_port'];
-	if($config['threads'] > 1) {
-		$cmd .= ' --cont-batching --parallel '.$config['threads'];
-	}
 	$cmd .= ' --log-disable >/dev/null'; /* For privacy and legal deniability */
 	passthru($cmd, $ret_code);
 	return $ret_code;
@@ -81,7 +78,7 @@ do {
 msg("server loaded ok\n");
 
 $workers = [];
-for($i = 0; $i < $config['threads']; ++$i) {
+for($i = 0; $i < $config['workers']; ++$i) {
 	$work = function() use($config, $version, $i) {
 		$generation = post($config['horde_root'].'/api/v2/generate/text/pop', [
 			'bridge_agent' => 'horde-bridge-lcpp-server/'.$version,
@@ -91,7 +88,7 @@ for($i = 0; $i < $config['threads']; ++$i) {
 			'max_context_length' => $config['max_context_length'],
 			'priority_usernames' => $config['priority_usernames'],
 			'softprompts' => [],
-			'threads' => $config['threads'],
+			'threads' => $config['advertised_threads'],
 			'amount' => 1,
 		], ['apikey: '.$config['worker_api_key']]);
 		if(!isset($generation['payload']['prompt'])) {
@@ -191,7 +188,7 @@ for($i = 0; $i < $config['threads']; ++$i) {
 		return 0;
 	});
 }
-msg("spawned %d worker processes\n", $config['threads']);
+msg("spawned %d worker processes\n", $config['workers']);
 
 $stop = false;
 $terminate = function() use(&$stop, $workers, $server_pid) {

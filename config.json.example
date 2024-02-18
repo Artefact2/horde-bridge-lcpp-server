@@ -3,10 +3,11 @@
     "worker_name": "XXXXXXXXXXXXXXXXXX",
     "worker_api_key": "XXXXXXXXXXXXXXXXXX",
     "advertised_model": "XXXXXXXXXXXXXXXXXX",
+    "advertised_threads": 1,
     "max_length": 512,
     "max_context_length": 4096,
     "priority_usernames": [],
-    "threads": 1,
+    "workers": 1,
     "server_port": 24499,
     "server_command": "./llama.cpp/server -ngl 999 -m /path/to/model.gguf"
 }
