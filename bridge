@@ -23,12 +23,6 @@ if(!is_array($config)) {
 	die(1);
 }
 $config['version'] = trim(shell_exec('git -C '.escapeshellarg(__DIR__).' describe --always --abbrev=7'));
-$runtime_dir = getenv('XDG_RUNTIME_DIR');
-if(!$runtime_dir || !is_dir($runtime_dir) || !is_writable($runtime_dir)) {
-	$runtime_dir = sys_get_temp_dir();
-	fprintf(STDERR, "%s: XDG_RUNTIME_DIR unset or incorrect, falling back to %s\n", $argv[0], $runtime_dir);
-}
-$config['heartbeat_path'] = $runtime_dir.'/horde-bridge.'.posix_getpid();
 
 function msg(...$args): void {
 	$fmt = array_shift($args);
@@ -42,6 +36,30 @@ function spawn_task(callable $t): int {
 	}
 
 	die((int)$t());
+}
+
+function with_heartbeat(callable $c) {
+	global $config;
+	if(!isset($config['heartbeat_path'])) {
+		$runtime_dir = getenv('XDG_RUNTIME_DIR');
+		if(!$runtime_dir || !is_dir($runtime_dir) || !is_writable($runtime_dir)) {
+			$runtime_dir = sys_get_temp_dir();
+			fprintf(STDERR, "%s: XDG_RUNTIME_DIR unset or incorrect, falling back to %s\n", $argv[0], $runtime_dir);
+		}
+		$config['heartbeat_path'] = $runtime_dir.'/horde-bridge.'.posix_getpid();
+	}
+	$fp = fopen($config['heartbeat_path'], 'c+');
+	flock($fp, LOCK_EX);
+	$line = fgets($fp);
+	if($line === false) {
+		$hb = [];
+	} else {
+		$hb = json_decode($line, true);
+	}
+	rewind($fp);
+	ftruncate($fp, 0);
+	fwrite($fp, json_encode($c($hb)));
+	fclose($fp);
 }
 
 function post(string $uri, array $json, array $headers = []): array|false {
@@ -85,10 +103,12 @@ do {
 msg("server loaded ok\n");
 
 $hb_last_ts = microtime(true);
-file_put_contents($config['heartbeat_path'], json_encode([
-	'start' => [ $hb_last_ts, 0, 0 ],
-	'since' => [ $hb_last_ts, 0, 0 ],
-]));
+with_heartbeat(function(array $hb) use($hb_last_ts): array {
+	return [
+		'start' => [ $hb_last_ts, 0, 0 ],
+		'since' => [ $hb_last_ts, 0, 0 ],
+	];
+});
 
 $workers = [];
 for($i = 0; $i < $config['workers']; ++$i) {
@@ -243,18 +263,14 @@ for($i = 0; $i < $config['workers']; ++$i) {
 		       $ans['timings']['predicted_per_second'],
 		       $horde_ans['reward']);
 
-		spawn_task(function() use($config, $horde_ans) {
-			$fp = fopen($config['heartbeat_path'], 'c+');
-			flock($fp, LOCK_EX);
-			$hb = json_decode(fgets($fp), true);
-			rewind($fp);
-			ftruncate($fp, 0);
-			foreach($hb as $k => &$v) {
-				$v[1] += 1;
-				$v[2] += $horde_ans['reward'];
-			}
-			fwrite($fp, json_encode($hb));
-			fclose($fp);
+		spawn_task(function() use($horde_ans) {
+			with_heartbeat(function(array $hb) use($horde_ans): array {
+				foreach($hb as $k => &$v) {
+					$v[1] += 1;
+					$v[2] += $horde_ans['reward'];
+				}
+				return $hb;
+			});
 			return 0;
 		});
 
@@ -306,20 +322,16 @@ while($stop === false) {
 	sleep(5);
 
 	if(($ts = microtime(true)) - $hb_last_ts >= 300) {
-		$fp = fopen($config['heartbeat_path'], 'c+');
-		flock($fp, LOCK_EX);
-		$hb = json_decode(fgets($fp), true);
-		msg("heartbeat: %.1fkudos/hr, %.1freqs/hr since start, %.1fkudos/hr, %.1freqs/hr in the last 5 minutes\n",
-		    3600 * $hb['start'][2] / ($ts - $hb['start'][0]),
-		    3600 * $hb['start'][1] / ($ts - $hb['start'][0]),
-		    3600 * $hb['since'][2] / ($ts - $hb['since'][0]),
-		    3600 * $hb['since'][1] / ($ts - $hb['since'][0])
-		);
-		$hb['since'] = [ $ts, 0, 0 ];
+		with_heartbeat(function(array $hb) use($ts): array {
+			msg("heartbeat: %.1fkudos/hr, %.1freqs/hr since start, %.1fkudos/hr, %.1freqs/hr in the last 5 minutes\n",
+			    3600 * $hb['start'][2] / ($ts - $hb['start'][0]),
+			    3600 * $hb['start'][1] / ($ts - $hb['start'][0]),
+			    3600 * $hb['since'][2] / ($ts - $hb['since'][0]),
+			    3600 * $hb['since'][1] / ($ts - $hb['since'][0])
+			);
+			$hb['since'] = [ $ts, 0, 0 ];
+			return $hb;
+		});
 		$hb_last_ts = $ts;
-		rewind($fp);
-		ftruncate($fp, 0);
-		fwrite($fp, json_encode($hb));
-		fclose($fp);
 	}
 }
