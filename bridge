@@ -124,7 +124,7 @@ for($i = 0; $i < $config['workers']; ++$i) {
 			'threads' => $config['advertised_threads'],
 			'amount' => 1,
 		], ['apikey: '.$config['worker_api_key']]);
-		if(isset($generation['id']) && $generation['id'] === null) {
+		if(array_key_exists('id', $generation) && $generation['id'] === null) {
 			/* Queue is empty, just idle silently */
 			sleep(5);
 			return 0;
