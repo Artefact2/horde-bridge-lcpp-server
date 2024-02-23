@@ -13,7 +13,7 @@ Released under the Apache License, version 2.0.
 git clone https://github.com/Artefact2/horde-bridge-lcpp-server
 cd horde-bridge-lcpp-server
 
-git clone https://github.com/ggerganov/llama.cpp
+git clone -b for-horde https://github.com/Artefact2/llama.cpp.git
 make -C llama.cpp LLAMA_HIPBLAS=1 AMDGPU_TARGETS=gfx1030 server # tweak build type to your hardware
 
 cp config.json.example config.json

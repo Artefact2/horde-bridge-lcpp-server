@@ -185,10 +185,6 @@ for($i = 0; $i < $config['workers']; ++$i) {
 			msg("request %s: ignoring n=%d\n",
 			    $generation['id'], $payload['n']);
 		}
-		if($payload['top_a'] > 0 && in_array(1, $payload['sampler_order'])) {
-			msg("request %s: ignoring top_a=%.3f\n",
-			    $generation['id'], $payload['top_a']);
-		}
 		if($payload['rep_pen'] > 1 && $payload['rep_pen_range'] > 0 && $payload['sampler_order'][0] !== 6) {
 			if(!in_array(6, $payload['sampler_order'])) {
 				/* No rep_pen requested at all, we can turn it off ourselves */
@@ -211,6 +207,7 @@ for($i = 0; $i < $config['workers']; ++$i) {
 			'top_p' => $payload['top_p'],
 			'typical_p' => $payload['typical'],
 			'min_p' => $payload['min_p'],
+			'top_a' => $payload['top_a'],
 			'stop' => $payload['stop_sequence'],
 			'ignore_eos' => $payload['use_default_badwordsids'],
 			'dynatemp_range' => $payload['dynatemp_range'],
@@ -218,11 +215,13 @@ for($i = 0; $i < $config['workers']; ++$i) {
 			'samplers' => (function() use($payload) {
 				/* from lite.koboldai.net: 0=topk, 1=topa, 2=topp/minp, 3=tfs, 4=typ, 5=temp, 6=reppen */
 				/* https://github.com/ggerganov/llama.cpp/blob/master/common/common.cpp#L1137 */
-				/* XXX: no top_a, rep_pen is always first */
+				/* XXX: rep_pen is always first */
 				$samplers = [];
 				foreach($payload['sampler_order'] as $s) {
 					if($s === 0 && $payload['top_k'] > 0) {
 						$samplers[] = 'top_k';
+					} else if($s === 1 && $payload['top_a'] > 0) {
+						$samplers[] = 'top_a';
 					} else if($s === 2) {
 						if($payload['top_p'] < 1) {
 							$samplers[] = 'top_p';
