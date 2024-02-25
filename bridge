@@ -322,7 +322,7 @@ pcntl_signal(SIGHUP, $terminate);
 while($stop === false) {
 	if(pcntl_waitpid(-1, $status, WNOHANG) !== 0 && $status !== 0) {
 		msg("one of our children exited abnormally, terminating now\n");
-		$terminate();
+		posix_kill(0, SIGTERM);
 	}
 	pcntl_signal_dispatch();
 	sleep(10);
