@@ -105,8 +105,9 @@ msg("server loaded ok\n");
 $hb_last_ts = microtime(true);
 with_heartbeat(function(array $hb) use($hb_last_ts): array {
 	return [
-		'start' => [ $hb_last_ts, 0, 0 ],
-		'since' => [ $hb_last_ts, 0, 0 ],
+		/* timestamp, num_requests, num_kudos, num_evaluated, num_predicted */
+		'start' => [ $hb_last_ts, 0, 0, 0, 0 ],
+		'since' => [ $hb_last_ts, 0, 0, 0, 0 ],
 	];
 });
 
@@ -267,11 +268,13 @@ for($i = 0; $i < $config['workers']; ++$i) {
 		       $ans['timings']['predicted_per_second'],
 		       $horde_ans['reward']);
 
-		spawn_task(function() use($horde_ans) {
-			with_heartbeat(function(array $hb) use($horde_ans): array {
+		spawn_task(function() use($ans, $horde_ans) {
+			with_heartbeat(function(array $hb) use($ans, $horde_ans): array {
 				foreach($hb as $k => &$v) {
 					$v[1] += 1;
 					$v[2] += $horde_ans['reward'];
+					$v[3] += $ans['timings']['prompt_n'];
+					$v[4] += $ans['timings']['predicted_n'];
 				}
 				return $hb;
 			});
@@ -326,13 +329,17 @@ while($stop === false) {
 
 	if(($ts = microtime(true)) - $hb_last_ts >= 300) {
 		with_heartbeat(function(array $hb) use($ts): array {
-			msg("heartbeat: %.1fkudos/hr, %.1freqs/hr since start, %.1fkudos/hr, %.1freqs/hr in the last 5 minutes\n",
-			    3600 * $hb['start'][2] / ($ts - $hb['start'][0]),
-			    3600 * $hb['start'][1] / ($ts - $hb['start'][0]),
-			    3600 * $hb['since'][2] / ($ts - $hb['since'][0]),
-			    3600 * $hb['since'][1] / ($ts - $hb['since'][0])
-			);
-			$hb['since'] = [ $ts, 0, 0 ];
+			$f = function(array $data, string $label) use($ts) {
+				for($k = 1; $k <= 4; ++$k) {
+					$data[$k] /= ($ts - $data[0]);
+				}
+				msg("heartbeat: %.1freqs/hr, %.1fkudos/hr, %.1fT/s evaluated avg, %.1fT/s predicted avg %s\n",
+				    $data[1] * 3600.0, $data[2] * 3600.0, $data[3], $data[4], $label);
+			};
+
+			$f($hb['start'], 'since start');
+			$f($hb['since'], 'in the last 5 minutes');
+			$hb['since'] = [ $ts, 0, 0, 0, 0 ];
 			return $hb;
 		});
 		$hb_last_ts = $ts;
