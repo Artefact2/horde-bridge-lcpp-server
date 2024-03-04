@@ -202,7 +202,6 @@ for($i = 0; $i < $config['workers']; ++$i) {
 
 		$ans = post('http://127.0.0.1:'.$config['server_port'].'/completion', [
 			'prompt' => $payload['prompt'],
-			'cache_prompt' => true,
 			'n_predict' => $n_predict = min($config['advertised_max_length'], $payload['max_length']),
 			'repeat_penalty' => $payload['rep_pen'],
 			'repeat_last_n' => $payload['rep_pen_range'],
@@ -244,7 +243,6 @@ for($i = 0; $i < $config['workers']; ++$i) {
 				}
 				return $samplers;
 			})(),
-			'slot' => crc32(substr($payload['prompt'], 0, 128)) % $config['server_slots'],
 		]);
 		if(!isset($ans['content'])) {
 			msg("unexpected reply from llama.cpp server: %s\n",
