@@ -165,6 +165,7 @@ for($i = 0; $i < $config['workers']; ++$i) {
 			'top_a' => 0,
 			'dynatemp_range' => 0.0,
 			'dynatemp_exponent' => 1.0,
+			'smoothing_factor' => 0.0,
 		], $generation['payload']);
 
 		$unsupported = [];
@@ -194,6 +195,9 @@ for($i = 0; $i < $config['workers']; ++$i) {
 			} else {
 				msg("request %s: ignoring rep_pen sampler order\n", $generation['id']);
 			}
+		}
+		if($payload['smoothing_factor'] > 0) {
+			msg("request %s: ignoring smoothing_factor=%.3f\n", $generation['id'], $payload['smoothing_factor']);
 		}
 
 		$ans = post('http://127.0.0.1:'.$config['server_port'].'/completion', [
