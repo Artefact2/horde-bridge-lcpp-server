@@ -326,8 +326,15 @@ $terminate = function() use(&$stop, $config, $workers, $server_pid) {
 	msg("got termination signal, waiting for current generation(s) to end...\n");
 	$stop = true;
 	foreach($workers as $i => $pid) {
-		pcntl_waitpid($pid, $status);
-		msg("worker %d exited with code %d\n", $i, $status);
+		for($i = 0; $i < 60; ++$i) {
+			if(pcntl_waitpid($pid, $status) === 0) {
+				sleep(1);
+				continue;
+			}
+			msg("worker %d exited with code %d\n", $i, $status);
+			continue 2;
+		}
+		msg("worker %d seems stuck, continuing anyway\n", $i);
 	}
 	unlink($config['heartbeat_path']);
 	posix_kill(0, SIGKILL);
