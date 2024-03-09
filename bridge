@@ -200,9 +200,24 @@ for($i = 0; $i < $config['workers']; ++$i) {
 			msg("request %s: ignoring smoothing_factor=%.3f\n", $generation['id'], $payload['smoothing_factor']);
 		}
 
+		$n_predict = min($config['advertised_max_length'], $payload['max_length']);
+		$n_ctx = min($config['advertised_max_context_length'], $payload['max_context_length']);
+		if(strlen($payload['prompt']) > $n_ctx) {
+			/* Prompt might need trimming */
+			$tokens = post('http://127.0.0.1:'.$config['server_port'].'/tokenize', [
+				'content' => $payload['prompt'],
+			])['tokens'];
+			$max_tokens = max(1, $n_ctx - $n_predict);
+			$tokens = array_slice($tokens, -$max_tokens);
+			$payload['prompt'] = post('http://127.0.0.1:'.$config['server_port'].'/detokenize', [
+				'tokens' => $tokens,
+			])['content'];
+		}
+
 		$ans = post('http://127.0.0.1:'.$config['server_port'].'/completion', [
 			'prompt' => $payload['prompt'],
-			'n_predict' => $n_predict = min($config['advertised_max_length'], $payload['max_length']),
+			'n_predict' => $n_predict,
+			'n_keep' => $n_ctx - $n_predict,
 			'repeat_penalty' => $payload['rep_pen'],
 			'repeat_last_n' => $payload['rep_pen_range'],
 			'temperature' => $payload['temperature'],
@@ -264,7 +279,7 @@ for($i = 0; $i < $config['workers']; ++$i) {
 		printf("worker %d submitted %s, evaluated %d/%d (%.1fT/s) and predicted %d/%d (%.1fT/s) tokens, got %.2f kudos\n",
 		       $i,
 		       $generation['id'],
-		       $ans['timings']['prompt_n'], $payload['max_context_length'],
+		       $ans['timings']['prompt_n'], $n_ctx,
 		       $ans['timings']['prompt_per_second'],
 		       $ans['timings']['predicted_n'], $n_predict,
 		       $ans['timings']['predicted_per_second'],
